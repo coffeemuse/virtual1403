@@ -45,6 +45,8 @@ var useCDC = flag.Bool("cdc", false, "When using -printfile, file has CDC "+
 	"carriage control characters in first position of each line")
 var useASA = flag.Bool("asa", false, "When using -printfile, file has ASA "+
 	"carriage control characters in first position of each line")
+var jobTimeout = flag.Int("jobtimeout", 500, "job timeout, in milliseconds, "+
+	"before considering job over when receiving no more data")
 var trace = flag.Bool("trace", false, "enable trace logging")
 var displayVersion = flag.Bool("version", false, "display version and quit")
 
@@ -62,9 +64,9 @@ func main() {
 		log.Printf("TRACE: trace logging enabled")
 	}
 
-    if *useASA && *useCDC {
-        log.Fatalf("FATAL: the -asa and -cdc flags are mutually exclusive")
-    }
+	if *useASA && *useCDC {
+		log.Fatalf("FATAL: the -asa and -cdc flags are mutually exclusive")
+	}
 
 	if *useCDC && *printFile == "" {
 		log.Fatalf("FATAL: the -cdc flag is only used with the -printFile " +
@@ -74,6 +76,10 @@ func main() {
 	if *useASA && *printFile == "" {
 		log.Fatalf("FATAL: the -asa flag is only used with the -printFile " +
 			"parameter.")
+	}
+
+	if *jobTimeout < 1 {
+		log.Fatalf("FATAL: the -jobtimeout must be > 0.")
 	}
 
 	// Load configuration file
@@ -247,9 +253,9 @@ func runFilePrinter(output OutputConfig, filename string) {
 		handler = newOnlineOutputHandler(output.ServiceAddress, output.APIKey,
 			output.Profile, "fileReader")
 	}
-    if *useCDC {
-        err = scanner.ScanCDCUTF8Single(r, jobname, handler, *trace)
-    } else if *useASA {
+	if *useCDC {
+		err = scanner.ScanCDCUTF8Single(r, jobname, handler, *trace)
+	} else if *useASA {
 		err = scanner.ScanASAUTF8Single(r, jobname, handler, *trace)
 	} else {
 		err = scanner.ScanUTF8Single(r, jobname, handler, *trace)
@@ -271,7 +277,8 @@ func handleHercules(address string, handler scanner.PrinterHandler,
 	defer conn.Close()
 	log.Printf("INFO:  [%s] Connection successful.", inputName)
 
-	err = scanner.ScanWithLogTag(conn, handler, *trace, inputName)
+	err = scanner.ScanWithLogTag(conn, handler, *trace, inputName,
+		time.Duration(*jobTimeout)*time.Millisecond)
 	if err == io.EOF {
 		// we're done!
 		log.Printf("WARN:  [%s] Hercules disconnected.", inputName)
