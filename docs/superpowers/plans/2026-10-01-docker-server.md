@@ -14,6 +14,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-01-docker-server-design.md`
 
+**Status:** Implemented. The file contents below match the shipped files, including changes made after review: the SMTP wording, the workflow's job-level `packages: write`, its concurrency group, publishing only from `coffeemuse`, the `:dev` tag in `compose.build.yaml`, and the README's font mount and rootless/`userns-remap` notes. If the plan and a shipped file ever disagree, the shipped file is right.
+
 ## Global Constraints
 
 **Code and image**
@@ -175,6 +177,7 @@ Expected (FAIL, because there's no `.dockerignore` yet): the listing includes `.
 .git
 .github
 .claude
+.superpowers
 dist
 docs
 deploy
@@ -313,7 +316,7 @@ EOF
 - Produces:
   - compose project `virtual1403`, with service `server` and volume `data`, which becomes `virtual1403_data`
   - the `V1403_PORT` environment variable, default `8000`, which sets the published address
-  - with `compose.build.yaml`, Compose builds and tags the image locally as `ghcr.io/coffeemuse/virtual1403-server:edge`
+  - with `compose.build.yaml`, Compose builds and tags the image locally as `virtual1403-server:dev`, so a dev build never replaces the published `:edge`
 
 - [ ] **Step 1: Write `deploy/docker/compose.yaml`**
 
@@ -354,8 +357,10 @@ volumes:
 # Development override: build the image from this checkout instead of
 # pulling it. From deploy/docker/:
 #   docker compose -f compose.yaml -f compose.build.yaml up --build
+# The local tag keeps a dev build from replacing the published :edge image.
 services:
   server:
+    image: virtual1403-server:dev
     build:
       context: ../..
       dockerfile: webserver/Dockerfile
@@ -451,9 +456,11 @@ inactive_months_cleanup: 6
 # accounts will be deleted.
 unverified_months_cleanup: 1
 
-# SMTP server for verification emails and PDF delivery. The server must
-# support STARTTLS (usually port 587); implicit TLS on port 465 is not
-# supported. If authentication isn't required, remove username and password.
+# SMTP server for verification emails and PDF delivery. Plaintext and
+# STARTTLS servers are supported; implicit TLS (usually port 465) is not. If
+# you set username and password, the server must offer STARTTLS (usually
+# port 587), because credentials are never sent unencrypted. If
+# authentication isn't required, remove username and password.
 mail_config:
   from_address: virtual.1403@example.com
   server: smtp.example.com
@@ -503,6 +510,23 @@ handles TLS; see [Reverse proxy](#reverse-proxy).
    ```
 
    From then on, edit it with `sudo`.
+
+   If Docker runs rootless or with `userns-remap`, UID 65532 in the
+   container is a different UID on the host, so those commands don't give
+   it access:
+
+   - **Rootless Docker:** run them in a container, which applies the same
+     UID mapping as the server:
+
+     ```bash
+     docker run --rm -v "$PWD/config.yaml":/c busybox \
+       sh -c 'chown 65532:65532 /c && chmod 600 /c'
+     ```
+
+   - **`userns-remap`:** the host UID is 65532 plus the start of the
+     `dockremap` range in `/etc/subuid` (and `/etc/subgid` for the group).
+     For `dockremap:100000:65536`, run
+     `sudo chown 165532:165532 config.yaml`.
 4. Start the server:
 
    ```bash
@@ -553,9 +577,13 @@ Built-in TLS support is planned for a later version of this setup.
 
 ## Email
 
-- The SMTP server must support STARTTLS, usually on port 587. Implicit TLS on
-  port 465 is not supported. A relay that needs no authentication also works;
-  in that case, remove `username` and `password`.
+- Plaintext and STARTTLS SMTP servers are supported; implicit TLS (usually
+  port 465) is not.
+- If you set `username` and `password`, the server must offer STARTTLS
+  (usually port 587), because credentials are never sent unencrypted.
+  Otherwise sending fails, and the log shows `unencrypted connection`.
+- A relay that needs no authentication, such as a LAN mail server on port 25,
+  can be plaintext. In that case, remove `username` and `password`.
 - `mail_config.disable: true` stops PDFs from being emailed. Jobs are still
   processed and kept for download. Verification emails for new sign-ups are
   still sent.
@@ -566,10 +594,17 @@ Built-in TLS support is planned for a later version of this setup.
 
 The `default-*` profiles can use a font you supply. Put the font file next to
 `config.yaml` and add a bind mount for it under `volumes:` in
-`compose.yaml`:
+`compose.yaml`. Use the long syntax, as for `config.yaml`, so that a missing
+or misspelled font file is an error instead of an empty directory that
+Docker creates in its place:
 
 ```yaml
-      - ./my-font.ttf:/etc/virtual1403/my-font.ttf:ro
+      - type: bind
+        source: ./my-font.ttf
+        target: /etc/virtual1403/my-font.ttf
+        read_only: true
+        bind:
+          create_host_path: false
 ```
 
 Then set `font_file: /etc/virtual1403/my-font.ttf` in `config.yaml`.
@@ -617,10 +652,19 @@ mkdir data
 sudo chown 65532:65532 data
 ```
 
+With rootless Docker or `userns-remap`, set the owner as in step 3 of
+[First run](#first-run) instead. With rootless Docker, for example:
+
+```bash
+docker run --rm -v "$PWD/data":/data busybox chown 65532:65532 /data
+```
+
 ## Troubleshooting
 
 - **`bind source path does not exist`:** there is no `config.yaml` next to
-  `compose.yaml`. Create it as described in [First run](#first-run).
+  `compose.yaml`. Create it as described in [First run](#first-run). If you
+  added a font mount, the error can also mean the font file is missing; see
+  [Optional font](#optional-font).
 - **The container keeps restarting:** check `docker compose logs server`.
   Configuration problems are logged as `ERROR: configuration: ...` followed
   by `FATAL: configuration errors`.
@@ -636,10 +680,11 @@ sudo chown 65532:65532 data
 
 - [ ] **Step 5: Build through the compose files, then test that a missing config is refused**
 
-Run from the repo root. The build uses both compose files and tags the result as the GHCR name, so the copied bundle uses it without pulling. Then copy the bundle to scratch, as a deployer would, and try to start it with no `config.yaml`:
+Run from the repo root. The build uses both compose files and tags the result `virtual1403-server:dev`. Retag it as the GHCR name so the copied bundle uses it without pulling; Step 10 removes both tags. Then copy the bundle to scratch, as a deployer would, and try to start it with no `config.yaml`:
 
 ```bash
 docker compose -f deploy/docker/compose.yaml -f deploy/docker/compose.build.yaml build
+docker tag virtual1403-server:dev ghcr.io/coffeemuse/virtual1403-server:edge
 docker image inspect ghcr.io/coffeemuse/virtual1403-server:edge --format '{{.Config.User}}'
 rm -rf "$SCRATCH/deploy" && cp -R deploy/docker "$SCRATCH/deploy"
 docker compose -p v1403test -f "$SCRATCH/deploy/compose.yaml" up -d; echo "exit=$?"
@@ -796,7 +841,7 @@ Expected:
 
 ```bash
 docker compose -p v1403test -f "$SCRATCH/deploy/compose.yaml" down -v
-docker image rm ghcr.io/coffeemuse/virtual1403-server:edge
+docker image rm ghcr.io/coffeemuse/virtual1403-server:edge virtual1403-server:dev
 rm -rf "$SCRATCH/deploy" "$SCRATCH/agent.yaml" "$SCRATCH/sample.txt" "$SCRATCH/virtual1403-data.tgz"
 docker volume ls --format '{{.Name}}' | grep -E '^v1403' || echo "no test volumes left"
 ```
@@ -865,7 +910,12 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+# One run at a time per branch, so :edge always ends up on the newest
+# commit. Superseded pull request runs are cancelled; coffeemuse runs queue.
+concurrency:
+  group: server-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE: ghcr.io/coffeemuse/virtual1403-server
@@ -884,11 +934,16 @@ jobs:
   image:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
+      # Only coffeemuse publishes. Pull requests, and manual runs from other
+      # branches, build without pushing.
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/coffeemuse'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -910,7 +965,7 @@ jobs:
           context: .
           file: webserver/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/coffeemuse' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

@@ -122,11 +122,14 @@ volumes:
 ```yaml
 services:
   server:
+    image: virtual1403-server:dev
     build:
       context: ../..
       dockerfile: webserver/Dockerfile
 ```
 Usage: `docker compose -f compose.yaml -f compose.build.yaml up --build`.
+
+The local `virtual1403-server:dev` tag keeps a dev build from replacing the published `:edge` image. (Added after the PR review; the first version inherited the `:edge` name from `compose.yaml`.)
 
 **`config.sample.yaml`** starts from `webserver/config.sample.yaml` with these changes:
 - `listen_port: 8000`, with a comment that it must match the container port in `compose.yaml`.
@@ -171,7 +174,11 @@ Usage: `docker compose -f compose.yaml -f compose.build.yaml up --build`.
 - `.dockerignore`
 - `.github/workflows/server-image.yml`
 
-**Permissions:** `contents: read`, `packages: write`.
+**Permissions:** `contents: read` for the workflow. Only the `image` job also gets `packages: write`.
+
+**Concurrency:** one run at a time per ref (`server-image-${{ github.ref }}`), so `:edge` always ends up on the newest commit. Superseded pull request runs are cancelled; `coffeemuse` runs queue.
+
+(Permissions and concurrency changed after the final review; the first version granted `packages: write` to the whole workflow and had no concurrency group.)
 
 **Job `test`**
 1. `actions/checkout`
@@ -182,20 +189,20 @@ Usage: `docker compose -f compose.yaml -f compose.build.yaml up --build`.
 **Job `image`** (`needs: test`)
 1. `actions/checkout`
 2. `docker/setup-buildx-action`
-3. `docker/login-action` to `ghcr.io` with `GITHUB_TOKEN`. Skipped on `pull_request`.
+3. `docker/login-action` to `ghcr.io` with `GITHUB_TOKEN`. Runs only when the workflow publishes: not on `pull_request`, and only on `refs/heads/coffeemuse`.
 4. `docker/metadata-action` with image `ghcr.io/coffeemuse/virtual1403-server` and tags:
    - `type=edge,branch=coffeemuse`
    - `type=sha` (produces `sha-<7 chars>`)
 5. `docker/build-push-action` with:
    - `context: .`, `file: webserver/Dockerfile`
    - `platforms: linux/amd64,linux/arm64`
-   - `push: ${{ github.event_name != 'pull_request' }}`
+   - `push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/coffeemuse' }}`
    - tags and labels from the metadata step
    - `cache-from: type=gha` and `cache-to: type=gha,mode=max`
 
 Pin each action to its current major version, looked up at implementation time.
 
-On a pull request, the workflow tests and builds both architectures but publishes nothing.
+On a pull request, or a manual run from a branch other than `coffeemuse`, the workflow tests and builds both architectures but publishes nothing.
 
 **Manual step after the first publish:** GHCR creates new packages as private. The repo owner must set `virtual1403-server` to public once so servers can pull without logging in.
 
