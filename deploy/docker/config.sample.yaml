@@ -78,9 +78,11 @@ inactive_months_cleanup: 6
 # accounts will be deleted.
 unverified_months_cleanup: 1
 
-# SMTP server for verification emails and PDF delivery. The server must
-# support STARTTLS (usually port 587); implicit TLS on port 465 is not
-# supported. If authentication isn't required, remove username and password.
+# SMTP server for verification emails and PDF delivery. Plaintext and
+# STARTTLS servers are supported; implicit TLS (usually port 465) is not. If
+# you set username and password, the server must offer STARTTLS (usually
+# port 587), because credentials are never sent unencrypted. If
+# authentication isn't required, remove username and password.
 mail_config:
   from_address: virtual.1403@example.com
   server: smtp.example.com

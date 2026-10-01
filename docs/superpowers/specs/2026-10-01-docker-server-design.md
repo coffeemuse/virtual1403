@@ -146,7 +146,7 @@ Usage: `docker compose -f compose.yaml -f compose.build.yaml up --build`.
    4. `docker compose logs server | grep "Created new admin"`. That line contains the admin email, password and access key.
 3. **Reverse proxy:** what to point the proxy at, setting `server_base_url`, and the `V1403_PORT=127.0.0.1:8000` loopback binding.
 4. **Email:**
-   - SMTP must offer STARTTLS. Port-465 implicit TLS is not supported. A server that needs no authentication also works.
+   - Plaintext and STARTTLS SMTP servers are supported; port-465 implicit TLS is not. If `username`/`password` are set, the server must offer STARTTLS, because Go's `net/smtp` won't send credentials unencrypted. (Corrected after the final review; the first version wrongly said STARTTLS was always required.)
    - `mail_config.disable: true` stops PDF emails only. Verification emails are still sent.
    - So without working SMTP, only the `create_admin` account, which is created already verified, can print.
 5. **Upgrades:** `docker compose pull && docker compose up -d`.

@@ -83,9 +83,13 @@ Built-in TLS support is planned for a later version of this setup.
 
 ## Email
 
-- The SMTP server must support STARTTLS, usually on port 587. Implicit TLS on
-  port 465 is not supported. A relay that needs no authentication also works;
-  in that case, remove `username` and `password`.
+- Plaintext and STARTTLS SMTP servers are supported; implicit TLS (usually
+  port 465) is not.
+- If you set `username` and `password`, the server must offer STARTTLS
+  (usually port 587), because credentials are never sent unencrypted.
+  Otherwise sending fails, and the log shows `unencrypted connection`.
+- A relay that needs no authentication, such as a LAN mail server on port 25,
+  can be plaintext. In that case, remove `username` and `password`.
 - `mail_config.disable: true` stops PDFs from being emailed. Jobs are still
   processed and kept for download. Verification emails for new sign-ups are
   still sent.
