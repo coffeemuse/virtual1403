@@ -33,6 +33,23 @@ handles TLS; see [Reverse proxy](#reverse-proxy).
    ```
 
    From then on, edit it with `sudo`.
+
+   If Docker runs rootless or with `userns-remap`, UID 65532 in the
+   container is a different UID on the host, so those commands don't give
+   it access:
+
+   - **Rootless Docker:** run them in a container, which applies the same
+     UID mapping as the server:
+
+     ```bash
+     docker run --rm -v "$PWD/config.yaml":/c busybox \
+       sh -c 'chown 65532:65532 /c && chmod 600 /c'
+     ```
+
+   - **`userns-remap`:** the host UID is 65532 plus the start of the
+     `dockremap` range in `/etc/subuid` (and `/etc/subgid` for the group).
+     For `dockremap:100000:65536`, run
+     `sudo chown 165532:165532 config.yaml`.
 4. Start the server:
 
    ```bash
@@ -100,10 +117,17 @@ Built-in TLS support is planned for a later version of this setup.
 
 The `default-*` profiles can use a font you supply. Put the font file next to
 `config.yaml` and add a bind mount for it under `volumes:` in
-`compose.yaml`:
+`compose.yaml`. Use the long syntax, as for `config.yaml`, so that a missing
+or misspelled font file is an error instead of an empty directory that
+Docker creates in its place:
 
 ```yaml
-      - ./my-font.ttf:/etc/virtual1403/my-font.ttf:ro
+      - type: bind
+        source: ./my-font.ttf
+        target: /etc/virtual1403/my-font.ttf
+        read_only: true
+        bind:
+          create_host_path: false
 ```
 
 Then set `font_file: /etc/virtual1403/my-font.ttf` in `config.yaml`.
@@ -151,10 +175,19 @@ mkdir data
 sudo chown 65532:65532 data
 ```
 
+With rootless Docker or `userns-remap`, set the owner as in step 3 of
+[First run](#first-run) instead. With rootless Docker, for example:
+
+```bash
+docker run --rm -v "$PWD/data":/data busybox chown 65532:65532 /data
+```
+
 ## Troubleshooting
 
 - **`bind source path does not exist`:** there is no `config.yaml` next to
-  `compose.yaml`. Create it as described in [First run](#first-run).
+  `compose.yaml`. Create it as described in [First run](#first-run). If you
+  added a font mount, the error can also mean the font file is missing; see
+  [Optional font](#optional-font).
 - **The container keeps restarting:** check `docker compose logs server`.
   Configuration problems are logged as `ERROR: configuration: ...` followed
   by `FATAL: configuration errors`.
