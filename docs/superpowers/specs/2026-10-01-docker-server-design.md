@@ -1,7 +1,7 @@
 # Docker support for the virtual1403 server
 
 - **Date:** 2026-10-01
-- **Status:** Approved design, pending spec review
+- **Status:** Approved
 - **Branch:** `claude/docker-server` (off `coffeemuse`), merged by PR
 
 ## Intent
@@ -237,3 +237,4 @@ This change adds no Go code, so there are no new unit tests. Verification means 
 - Optional environment-variable configuration.
 - An agent image.
 - A `-config` flag for the server.
+- Stop the server from logging its session and share secret keys at startup (`webserver/main.go`). Those keys are visible to anyone who can read container logs, which matters for public instances. Changing this touches upstream code, so consider offering the fix upstream.
