@@ -1,0 +1,2 @@
+# Your config.yaml holds SMTP credentials; never commit it.
+config.yaml

@@ -1,0 +1,8 @@
+# Development override: build the image from this checkout instead of
+# pulling it. From deploy/docker/:
+#   docker compose -f compose.yaml -f compose.build.yaml up --build
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: webserver/Dockerfile
