@@ -1,0 +1,21 @@
+# The server image needs only the Go sources, vendor/ and the embedded
+# assets. Keep VCS data, docs, deployment files, local configs, databases
+# and build output out of the build context.
+.git
+.github
+.claude
+.superpowers
+dist
+docs
+deploy
+fonts
+**/*.db
+**/config.yaml
+agent/agent
+agent/virtual1403
+agent/pdfs
+pdftest/pdftest
+pdftest/*.pdf
+webserver/webserver
+webserver/testclient/testclient
+webserver/dbfixer/dbfixer
