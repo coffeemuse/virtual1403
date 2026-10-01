@@ -1,0 +1,10 @@
+# Development override: build the image from this checkout instead of
+# pulling it. From deploy/docker/:
+#   docker compose -f compose.yaml -f compose.build.yaml up --build
+# The local tag keeps a dev build from replacing the published :edge image.
+services:
+  server:
+    image: virtual1403-server:dev
+    build:
+      context: ../..
+      dockerfile: webserver/Dockerfile

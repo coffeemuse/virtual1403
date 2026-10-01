@@ -1,0 +1,26 @@
+# virtual1403 server. Copy this directory to your server, create config.yaml
+# from config.sample.yaml, then run: docker compose up -d
+# See README.md for details.
+name: virtual1403
+
+services:
+  server:
+    image: ghcr.io/coffeemuse/virtual1403-server:edge
+    restart: unless-stopped
+    ports:
+      # Set V1403_PORT=127.0.0.1:8000 to listen on loopback only, e.g. when a
+      # reverse proxy on the same host provides TLS.
+      - "${V1403_PORT:-8000}:8000"
+    volumes:
+      # Long syntax so that a missing config.yaml is an error, instead of
+      # Docker silently creating a directory by that name.
+      - type: bind
+        source: ./config.yaml
+        target: /etc/virtual1403/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - data:/data
+
+volumes:
+  data:

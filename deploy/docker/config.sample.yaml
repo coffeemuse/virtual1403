@@ -1,0 +1,94 @@
+# virtual1403 server configuration for Docker.
+#
+# Copy this file to config.yaml, next to compose.yaml, and edit it. See
+# README.md for the first-run steps.
+
+# Port the server listens on inside the container. Leave this at 8000: it must
+# match the container port in compose.yaml. To change the port on the host,
+# set V1403_PORT instead (see README.md).
+listen_port: 8000
+
+# This setup serves plain HTTP only. For HTTPS, put a TLS-terminating reverse
+# proxy in front of the server (see README.md).
+
+# server_base_url is the URL users use to reach this server, without a
+# trailing slash. Behind a reverse proxy, this is the proxy's public URL, e.g.
+# https://print.example.com. Verification emails and the agent settings shown
+# to users are built from it.
+server_base_url: http://localhost:8000
+
+# The database lives on the data volume. Don't change this.
+database_file: /data/virtual1403.db
+
+# Initial admin email address. If this account does not exist at server
+# startup, it will be created as an admin with a random password that is
+# printed in the log.
+create_admin: admin@example.com
+
+# The following email address will be provided to authenticated users in page
+# footers to contact server admin.
+server_admin_email: admin@example.com
+
+# font_file is an optional font for the "default-*" profiles. Mount the file
+# into the container next to this config (see README.md), then set its path:
+#font_file: /etc/virtual1403/my-font.ttf
+
+# Quota - jobs and page count a user is allowed during the quota period.
+# Period is in hours. Values <= 0 disable the job and/or page quota.
+quota_jobs: 25
+quota_pages: 1000
+quota_period: 24 # hours
+
+# How many days to keep job PDFs in the database?
+pdf_cleanup_days: 7
+
+# Concurrent print jobs will limit the number of simultaneous threads running
+# the print API call. The default, 0, will allow unlimited concurrency. A
+# higher value will make incoming API requests to the print API block (wait)
+# until a seat is available. Typically the default of 0 is fine, but you may
+# need to set this due to external factors such as font license compliance,
+# mail service limitations, etc.
+concurrent_print_jobs: 0
+
+# To prevent users trying to DoS the server with a huge number of overstrike
+# lines (thus working around the page quota while sending the server nearly
+# unlimited amounts of data), each individual job may be limited to a number
+# of print directives. For a 62-lines-per-page virtual printer, a good limit
+# here might be 62 * pages quota / 2, assuming users won't typically try to
+# blow their entire pages quota on a single job.
+max_lines_per_job: 31000
+
+# "Nuisance jobs" are some jobs that run by default on TK4- which produce
+# printouts most people don't want to be spammed with. The following is an
+# array of regular expressions to identify job names that should be filtered
+nuisance_job_names:
+  - ^S.*_MF1$
+  - ^S.*_TSO$
+
+# The server can automatically delete inactive or unverified users.
+#
+# If both inactive_months_cleanup and unverified_months_cleanup are not set or
+# <= 0, no auto cleanup will occur. If one is set to > 0, both must be set >
+# 0.
+#
+# inactive_months_cleanup is the number of months after which inactive users
+# will be deleted.
+inactive_months_cleanup: 6
+# unverified_months_cleanup is the number of months after which unverified
+# accounts will be deleted.
+unverified_months_cleanup: 1
+
+# SMTP server for verification emails and PDF delivery. Plaintext and
+# STARTTLS servers are supported; implicit TLS (usually port 465) is not. If
+# you set username and password, the server must offer STARTTLS (usually
+# port 587), because credentials are never sent unencrypted. If
+# authentication isn't required, remove username and password.
+mail_config:
+  from_address: virtual.1403@example.com
+  server: smtp.example.com
+  port: 587
+  username: virtual.1403
+  password: change-me
+  # Uncomment to stop emailing PDFs. Jobs are still processed and kept for
+  # download, but verification emails for new sign-ups are still sent.
+  #disable: true

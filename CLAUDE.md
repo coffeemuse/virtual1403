@@ -34,6 +34,7 @@ go run ./agent -printfile foo.txt [-asa|-cdc] [-output <name>]   # print a local
 - Both programs read `config.yaml` from the working directory. The agent also accepts `-config`; the webserver path is hardcoded. Copy `config.sample.yaml` in either directory to start. Real `config.yaml` files and `*.db` are gitignored.
 - `VERSION` holds the release version. Builds inject it with `-ldflags "-X main.version=$VERSION"`. Bumping it is its own commit ("Update version to X.Y.Z").
 - `build-agent-dist.sh` must stay POSIX `sh` (no bashisms).
+- Docker: `webserver/Dockerfile` builds the server image, with the repo root as build context. `deploy/docker/` is the compose bundle that deployers copy to a server; see its README. `.github/workflows/server-image.yml` tests the code and publishes `ghcr.io/coffeemuse/virtual1403-server:edge` (amd64 and arm64) on pushes to `coffeemuse`.
 
 ## Architecture
 
