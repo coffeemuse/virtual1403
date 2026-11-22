@@ -98,11 +98,17 @@ func main() {
 
 	// Set up outputs
 	for name, conf := range outputs {
-		if conf.Mode == "local" {
-			// setup for local mode
+		if conf.Mode == "local" || conf.Mode == "healdan" {
+			// setup for the modes that render the PDF here: local mode,
+			// and healdan mode, which spools its PDFs in a directory
+			// until Healdan has them
 
 			// Make sure the output directory exists
-			if err = verifyOrCreateDir(conf.OutputDir); err != nil {
+			dir := conf.OutputDir
+			if conf.Mode == "healdan" {
+				dir = conf.Healdan.SpoolDir
+			}
+			if err = verifyOrCreateDir(dir); err != nil {
 				log.Fatalf("FATAL: [%s] %v", name, err.Error())
 			}
 
@@ -185,6 +191,20 @@ func runPrinter(inputName, outputName string, input InputConfig,
 			log.Printf("ERROR: [%s] %v", inputName, err)
 			return
 		}
+	} else if output.Mode == "healdan" {
+		log.Printf("INFO:  [%s] will file PDFs in Healdan at %s, folder %d",
+			inputName, output.Healdan.URL, output.Healdan.FolderID)
+		healdan, err := newHealdanOutputHandler(output.Healdan,
+			output.Profile, output.font, inputName)
+		if err != nil {
+			log.Printf("ERROR: [%s] %v", inputName, err)
+			return
+		}
+		// File anything a previous run left in the spool, then keep
+		// retrying on a timer.
+		healdan.drainSpool()
+		healdan.start()
+		handler = healdan
 	} else {
 		log.Printf("INFO:  [%s] will use online print API at `%s`",
 			inputName, output.ServiceAddress)
@@ -235,6 +255,7 @@ func runFilePrinter(output OutputConfig, filename string) {
 	}
 
 	var handler scanner.PrinterHandler
+	var healdan *healdanOutputHandler
 	var err error
 
 	if output.Mode == "local" {
@@ -247,6 +268,16 @@ func runFilePrinter(output OutputConfig, filename string) {
 			log.Printf("ERROR: %v", err)
 			return
 		}
+	} else if output.Mode == "healdan" {
+		log.Printf("INFO:  will file PDF in Healdan at %s, folder %d",
+			output.Healdan.URL, output.Healdan.FolderID)
+		healdan, err = newHealdanOutputHandler(output.Healdan,
+			output.Profile, output.font, "fileReader")
+		if err != nil {
+			log.Printf("ERROR: %v", err)
+			return
+		}
+		handler = healdan
 	} else {
 		log.Printf("INFO:  will use online print API at `%s`",
 			output.ServiceAddress)
@@ -262,6 +293,17 @@ func runFilePrinter(output OutputConfig, filename string) {
 	}
 	if err != nil {
 		log.Fatalf("FATAL: %v", err)
+	}
+
+	if healdan != nil {
+		// The job was tried once as it ended. Anything still in the
+		// spool (this job, or ones from earlier runs) gets one more try.
+		if left := healdan.drainSpool(); left > 0 {
+			log.Printf("WARN:  %d PDF(s) left in `%s`; they will be "+
+				"filed the next time the agent runs", left,
+				output.Healdan.SpoolDir)
+			os.Exit(1)
+		}
 	}
 }
 

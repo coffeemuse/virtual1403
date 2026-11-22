@@ -5,8 +5,8 @@ https://github.com/racingmars/virtual1403
 
 This is the Virtual 1403 Agent, which connects to Hercules to receive print
 jobs from mainframe operating systems and either generates PDFs in a local
-output directory, or sends the print jobs to an online service to email you
-PDFs.
+output directory, sends the print jobs to an online service to email you
+PDFs, or files the PDFs in a Healdan document management system.
 
 To use Virtual 1403, edit the config.yaml file to point to your Hercules
 sockdev printer and configure choose local or online mode. If using online
@@ -57,6 +57,49 @@ this case, page breaks ("1"), overstrike ("+"), and multiple line skipping
 input file. Regular lines must start with a single space character (" ").
 Handling of ASCII FF is disabled in -asa mode. The ASA characters 2–9, A, B,
 and C are not supported (these typically position to vertical tab stops).
+
+Filing Print Jobs in Healdan
+----------------------------
+
+With mode set to "healdan" in config.yaml, the agent files each print job as
+a PDF in one folder of a Healdan document management system, in place of
+writing it to a local directory or sending it to the online service. The
+config.yaml file describes the settings.
+
+Each PDF is first written to the spool directory, and is only removed from
+there once Healdan has answered that it holds the document. A PDF in the
+spool directory is one that Healdan doesn't have yet:
+
+- If Healdan can't be reached, or answers with an error of its own, the
+  agent tries again every minute, and when it next starts.
+- If Healdan refuses a PDF (for example, the account lost its permission on
+  the folder), the agent logs an ERROR with Healdan's reason and leaves the
+  PDF where it is. It is tried again when the agent is restarted.
+- If Healdan refuses the sign-in, or the folder or a property in config.yaml
+  is wrong, the agent logs an ERROR and files nothing more until the problem
+  is fixed and the agent is restarted. Print jobs keep arriving in the spool
+  directory meanwhile. The agent never repeats a refused sign-in by itself,
+  because Healdan blocks an account after a few wrong passwords in a row.
+
+Give the agent a Healdan account of its own, with the least access that
+works:
+
+- An ordinary account that signs in with a password. It can't be a read-only
+  account, and shouldn't be an administrator or a member of any group you
+  added. If your Healdan expires passwords, the account's password must be
+  changed in Healdan and in config.yaml before it does.
+- On the folder to file into: the Read and Write permissions, and no others
+  (in Healdan's Admin app, a Custom row with those two ticked).
+- On the matter's own folder: at least Read and Write as well. Healdan lets a
+  folder inside a matter narrow the list of who can use it, but never widen
+  it. To keep the account out of the matter's other folders, use a matter
+  kept for print output, or give those folders their own permissions without
+  the account.
+
+With Read and Write the account can also list the folder, change the
+properties of documents in it, check them out and save new versions. It can't
+download, delete, move or rename them. Every ordinary Healdan account is also
+in the Everyone group, so the account can reach whatever Everyone can.
 
 Acknowledgements
 ----------------
