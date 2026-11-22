@@ -255,3 +255,54 @@ func TestBaseURLTrailingSlash(t *testing.T) {
 		t.Errorf("path = %q", path)
 	}
 }
+
+func TestFileDocumentNeeds201(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			io.Copy(io.Discard, r.Body)
+			writeJSON(w, 200, `{"docNumber":1}`)
+		}))
+	defer srv.Close()
+
+	_, err := newHealdanClient(srv.URL).fileDocument(1, "a.pdf", nil,
+		strings.NewReader("%PDF"))
+	var he *healdanError
+	if !errors.As(err, &he) || he.Status != 200 {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestFileDocument201WithoutBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			io.Copy(io.Discard, r.Body)
+			w.WriteHeader(201)
+		}))
+	defer srv.Close()
+
+	n, err := newHealdanClient(srv.URL).fileDocument(1, "a.pdf", nil,
+		strings.NewReader("%PDF"))
+	if err != nil || n != 0 {
+		t.Errorf("docNumber = %d, err = %v", n, err)
+	}
+}
+
+func TestRedirectIsNotFollowed(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			hits++
+			if r.URL.Path == "/login" {
+				writeJSON(w, 200, `{"token":"hd_stolen"}`)
+				return
+			}
+			http.Redirect(w, r, "/login", http.StatusFound)
+		}))
+	defer srv.Close()
+
+	err := newHealdanClient(srv.URL).signIn("u", "p", "x")
+	var he *healdanError
+	if !errors.As(err, &he) || he.Status != 302 || hits != 1 {
+		t.Errorf("err = %v, hits = %d", err, hits)
+	}
+}

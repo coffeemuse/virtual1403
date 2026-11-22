@@ -55,6 +55,10 @@ output_directory: "pdfs"
 #
 # font_file (see LOCAL MODE) applies to healdan mode too.
 #
+# An output in healdan mode serves one input, and needs a spool_directory of
+# its own. For several printers, define one output per printer (see ADVANCED
+# CONFIGURATION below).
+#
 # This file then holds a password: make sure only you can read it.
 #
 #healdan:

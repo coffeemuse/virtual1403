@@ -99,11 +99,17 @@ every other value is sent as written. `font_file` works as in `local` mode.
   Healdan that is merely unreachable at start is a `WARN`, and the agent
   tries again on the retry timer.
 - **Each job:** render the PDF to the spool directory under
-  `v1403-<jobinfo>-<timestamp>.pdf`, then upload it under that name. On `201`
-  delete the spooled file and log the doc #.
+  `v1403-<jobinfo>-<timestamp>.pdf`. A separate uploader then files the
+  spool's PDFs under those names, oldest first, so the reader of the Hercules
+  socket never waits for Healdan. On `201` (and only `201`) it deletes the
+  spooled file and logs the doc #.
+- **One input per output:** an output in `healdan` mode owns its spool
+  directory. The config is refused when two inputs use one such output, or
+  two outputs name the same spool directory.
 - **Retry:** a file left in the spool is retried on a timer and at start.
-  Network errors, `5xx`, `429` and `503` retry with a growing delay. A `401`
-  signs in once more and retries. Any other `4xx` (permission taken away,
+  Network errors, `5xx` and `429` are retried every minute. A `401`
+  signs in once more and retries; a second `401` stops uploads until
+  restart. Redirects are never followed. Any other `4xx` (permission taken away,
   validation) is logged as `ERROR` and the file stays in the spool for a
   person to deal with; it is retried at the next start only.
 - **Sign-in failures:** `401 sign-in-failed` or `password-expired` stops

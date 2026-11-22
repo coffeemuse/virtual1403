@@ -47,14 +47,16 @@ type healdanOutputHandler struct {
 	inputName string
 	now       func() time.Time
 
-	// mu guards everything below, and makes sure only one upload runs at
-	// a time (a job ending and the retry timer may both want to).
+	// mu guards everything below, and makes sure only one pass over the
+	// spool runs at a time. The goroutine that reads from Hercules never
+	// takes it: it only writes PDFs into the spool.
 	mu         sync.Mutex
 	client     *healdanClient
 	ready      bool            // signed in, properties resolved
 	halted     bool            // no uploads until the agent is restarted
 	properties map[string]any  // as Healdan takes them
 	failed     map[string]bool // files Healdan refused; not retried
+	kick       chan struct{}   // a job ended; make a pass over the spool
 	stopCh     chan struct{}
 	stopped    chan struct{}
 }
@@ -78,6 +80,7 @@ func newHealdanOutputHandler(conf HealdanConfig, profile string,
 		now:       time.Now,
 		client:    newHealdanClient(conf.URL),
 		failed:    make(map[string]bool),
+		kick:      make(chan struct{}, 1),
 	}
 
 	if err := os.MkdirAll(conf.SpoolDir, 0700); err != nil {
@@ -116,9 +119,6 @@ func (h *healdanOutputHandler) EndOfJob(jobinfo string) {
 		}
 	}()
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	name, pages, err := h.spoolJob(jobinfo)
 	if err != nil {
 		log.Printf("ERROR: [%s] couldn't write PDF to the spool: %v",
@@ -128,7 +128,12 @@ func (h *healdanOutputHandler) EndOfJob(jobinfo string) {
 	log.Printf("INFO:  [%s] wrote %d page PDF to the spool as %s",
 		h.inputName, pages, name)
 
-	h.upload(name)
+	// Filing it is the uploader's work (see start). We never wait for
+	// Healdan here: this is the goroutine that reads from Hercules.
+	select {
+	case h.kick <- struct{}{}:
+	default: // a pass is already due
+	}
 }
 
 // spoolJob writes the current job's PDF into the spool directory and
@@ -183,18 +188,30 @@ func (h *healdanOutputHandler) spoolNameTaken(name string) bool {
 	return false
 }
 
-// start begins retrying the spool on a timer.
+// start begins the uploader: a goroutine that checks our Healdan settings
+// straight away, files what a previous run left in the spool, and then
+// makes a pass over the spool whenever a job ends and on a timer.
 func (h *healdanOutputHandler) start() {
 	h.stopCh = make(chan struct{})
 	h.stopped = make(chan struct{})
 	go func() {
 		defer close(h.stopped)
+
+		// So a wrong password, folder or property is reported now, not
+		// when the first job prints.
+		h.mu.Lock()
+		h.ensureReady()
+		h.mu.Unlock()
+		h.drainSpool()
+
 		ticker := time.NewTicker(retryInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-h.stopCh:
 				return
+			case <-h.kick:
+				h.drainSpool()
 			case <-ticker.C:
 				h.drainSpool()
 			}
@@ -297,6 +314,13 @@ func (h *healdanOutputHandler) upload(name string) uploadResult {
 			return uploadRetry
 		}
 		docNumber, err = h.fileSpooled(name)
+		if isStatus(err, 401) {
+			// A token we were just given is refused: that isn't this
+			// file's fault, and signing in again won't help.
+			h.halt(fmt.Sprintf("Healdan refused the token it had just "+
+				"given `%s`: %v", h.conf.Username, err))
+			return uploadRetry
+		}
 	}
 
 	if err == nil {
@@ -309,8 +333,13 @@ func (h *healdanOutputHandler) upload(name string) uploadResult {
 				docNumber, rerr)
 			return uploadFailed
 		}
-		log.Printf("INFO:  [%s] filed %s in Healdan as doc #%d",
-			h.inputName, name, docNumber)
+		if docNumber == 0 {
+			log.Printf("WARN:  [%s] filed %s in Healdan, which didn't say "+
+				"under which doc #", h.inputName, name)
+		} else {
+			log.Printf("INFO:  [%s] filed %s in Healdan as doc #%d",
+				h.inputName, name, docNumber)
+		}
 		return uploadDone
 	}
 

@@ -70,6 +70,8 @@ Each PDF is first written to the spool directory, and is only removed from
 there once Healdan has answered that it holds the document. A PDF in the
 spool directory is one that Healdan doesn't have yet:
 
+- Normally a PDF is filed within moments of its job ending. The agent never
+  makes the mainframe wait for Healdan.
 - If Healdan can't be reached, or answers with an error of its own, the
   agent tries again every minute, and when it next starts.
 - If Healdan refuses a PDF (for example, the account lost its permission on

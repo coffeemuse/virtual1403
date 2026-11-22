@@ -46,6 +46,7 @@ type fakeHealdan struct {
 	properties   []map[string]any
 	bodies       [][]byte
 	srv          *httptest.Server
+	blockFiling  chan struct{} // when set, a filing waits for it to close
 }
 
 func (f *fakeHealdan) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +69,12 @@ func (f *fakeHealdan) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, `{"items":[{"id":9,"username":"jsmith"}]}`)
 	case r.URL.Path == "/api/v1/documents":
 		f.filings++
+		if f.blockFiling != nil {
+			block := f.blockFiling
+			f.mu.Unlock()
+			<-block
+			f.mu.Lock()
+		}
 		status := 201
 		if len(f.fileStatuses) > 0 {
 			status = f.fileStatuses[0]
@@ -129,9 +136,12 @@ func testHandler(t *testing.T, url string,
 	return h, spool
 }
 
+// printJob prints a one-line job and then does what the handler's own
+// goroutine does when a job ends: one pass over the spool.
 func printJob(h *healdanOutputHandler, jobinfo string) {
 	h.AddLine("HELLO", true)
 	h.EndOfJob(jobinfo)
+	h.drainSpool()
 }
 
 func spoolFiles(t *testing.T, dir string) []string {
@@ -388,4 +398,84 @@ func TestUnknownUserHalts(t *testing.T) {
 	if files := spoolFiles(t, spool); len(files) != 1 {
 		t.Errorf("spool = %v", files)
 	}
+}
+
+func TestRepeated401Halts(t *testing.T) {
+	f := newFakeHealdan(t)
+	f.fileStatuses = []int{401, 401}
+	h, spool := testHandler(t, f.srv.URL, nil)
+	printJob(h, "A")
+	printJob(h, "B")
+	signIns, filings, _ := f.counts()
+	if signIns != 2 || filings != 2 {
+		t.Errorf("signIns = %d, filings = %d", signIns, filings)
+	}
+	if files := spoolFiles(t, spool); len(files) != 2 {
+		t.Errorf("spool = %v", files)
+	}
+	if len(h.failed) != 0 {
+		t.Errorf("failed = %v; a token problem isn't the file's fault",
+			h.failed)
+	}
+}
+
+func TestEndOfJobDoesNotWaitForHealdan(t *testing.T) {
+	f := newFakeHealdan(t)
+	f.blockFiling = make(chan struct{})
+	h, spool := testHandler(t, f.srv.URL, nil)
+	h.start()
+	defer h.stop()
+	defer close(f.blockFiling)
+
+	done := make(chan struct{})
+	go func() {
+		h.AddLine("ONE", true)
+		h.EndOfJob("A")
+		h.AddLine("TWO", true)
+		h.EndOfJob("B")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("EndOfJob waited for Healdan")
+	}
+	if files := spoolFiles(t, spool); len(files) != 2 {
+		t.Errorf("spool = %v", files)
+	}
+}
+
+func TestJobIsFiledWithoutWaitingForTimer(t *testing.T) {
+	f := newFakeHealdan(t)
+	h, spool := testHandler(t, f.srv.URL, nil)
+	h.start() // retryInterval is a minute
+	defer h.stop()
+	h.AddLine("HELLO", true)
+	h.EndOfJob("A")
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(spoolFiles(t, spool)) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("spool still holds %v", spoolFiles(t, spool))
+}
+
+func TestStartReportsBadSignIn(t *testing.T) {
+	f := newFakeHealdan(t)
+	f.signInStatus = 401
+	h, _ := testHandler(t, f.srv.URL, nil)
+	h.start() // nothing in the spool
+	defer h.stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if signIns, _, _ := f.counts(); signIns == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("the agent never tried its sign-in at start")
 }

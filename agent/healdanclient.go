@@ -48,6 +48,8 @@ func (e *healdanError) Error() string {
 			e.Detail)
 	case e.Code != "":
 		return fmt.Sprintf("Healdan answered %d %s", e.Status, e.Code)
+	case e.Detail != "":
+		return fmt.Sprintf("Healdan answered %d: %s", e.Status, e.Detail)
 	default:
 		return fmt.Sprintf("Healdan answered %d", e.Status)
 	}
@@ -79,7 +81,15 @@ type healdanClient struct {
 func newHealdanClient(baseURL string) *healdanClient {
 	return &healdanClient{
 		base: strings.TrimRight(baseURL, "/") + "/api/v1",
-		http: &http.Client{Timeout: 60 * time.Second},
+		http: &http.Client{
+			Timeout: 60 * time.Second,
+			// Healdan's API never redirects. Something in front of it
+			// might (to a login page, say), and following that would
+			// turn a POST into a GET of some other page.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -89,9 +99,27 @@ func newHealdanClient(baseURL string) *healdanClient {
 func (c *healdanClient) do(method, path, contentType string, body io.Reader,
 	out any) error {
 
-	req, err := http.NewRequest(method, c.base+path, body)
+	resp, err := c.send(method, path, contentType, body)
 	if err != nil {
 		return err
+	}
+	defer resp.Body.Close()
+
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// send sends a request, with our token if we have one, and returns the
+// answer if its status is 2xx. The caller closes its body. Any other
+// status comes back as a *healdanError.
+func (c *healdanClient) send(method, path, contentType string,
+	body io.Reader) (*http.Response, error) {
+
+	req, err := http.NewRequest(method, c.base+path, body)
+	if err != nil {
+		return nil, err
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -103,11 +131,11 @@ func (c *healdanClient) do(method, path, contentType string, body io.Reader,
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		defer resp.Body.Close()
 		he := &healdanError{Status: resp.StatusCode}
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		var problem struct {
@@ -118,13 +146,9 @@ func (c *healdanClient) do(method, path, contentType string, body io.Reader,
 			he.Code = problem.Code
 			he.Detail = problem.Detail
 		}
-		return he
+		return nil, he
 	}
-
-	if out == nil {
-		return nil
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return resp, nil
 }
 
 // signIn gets a device token with a username and password, and keeps it
@@ -189,7 +213,7 @@ func (c *healdanClient) findUserID(username string) (int64, error) {
 }
 
 // fileDocument files a PDF as a new document in the folder and returns its
-// doc #.
+// doc #, or 0 when it was filed but Healdan's answer didn't give one.
 func (c *healdanClient) fileDocument(folderID int64, name string,
 	properties map[string]any, pdf io.Reader) (int64, error) {
 
@@ -231,12 +255,29 @@ func (c *healdanClient) fileDocument(folderID int64, name string,
 		return 0, err
 	}
 
+	resp, err := c.send(http.MethodPost, "/documents",
+		mw.FormDataContentType(), &body)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	// Healdan answers 201 once it holds the document. Any other success
+	// came from something else, and doesn't mean the document is filed.
+	if resp.StatusCode != http.StatusCreated {
+		return 0, &healdanError{Status: resp.StatusCode,
+			Detail: "expected 201 for a filed document"}
+	}
+
+	// The document is filed whatever the body says: an answer we can't
+	// read must not make the caller file it again.
 	var filed struct {
 		DocNumber int64 `json:"docNumber"`
 	}
-	err = c.do(http.MethodPost, "/documents", mw.FormDataContentType(),
-		&body, &filed)
-	return filed.DocNumber, err
+	if json.NewDecoder(resp.Body).Decode(&filed) != nil {
+		return 0, nil
+	}
+	return filed.DocNumber, nil
 }
 
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")

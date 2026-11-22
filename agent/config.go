@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -145,6 +147,43 @@ func validateConfig(inputs map[string]InputConfig,
 						"'hercules_address'; this is not allowed",
 						name, othername))
 			}
+		}
+	}
+
+	// An output in healdan mode owns its spool directory: two printers
+	// working in one would file each other's PDFs, and file them twice.
+	spoolUsers := make(map[string][]string)
+	for name, config := range outputs {
+		if config.Mode != "healdan" {
+			continue
+		}
+		var users []string
+		for inputName, input := range inputs {
+			if input.Output == name {
+				users = append(users, inputName)
+			}
+		}
+		if len(users) > 1 {
+			sort.Strings(users)
+			errs = append(errs, fmt.Errorf(
+				"output [%s] is in 'healdan' mode, which only one input "+
+					"may use, and inputs %v use it; give each its own "+
+					"output and 'healdan.spool_directory'", name, users))
+		}
+		if config.Healdan.SpoolDir != "" {
+			dir := filepath.Clean(config.Healdan.SpoolDir)
+			if abs, err := filepath.Abs(dir); err == nil {
+				dir = abs
+			}
+			spoolUsers[dir] = append(spoolUsers[dir], name)
+		}
+	}
+	for _, names := range spoolUsers {
+		if len(names) > 1 {
+			sort.Strings(names)
+			errs = append(errs, fmt.Errorf(
+				"outputs %v have the same 'healdan.spool_directory'; "+
+					"each needs its own", names))
 		}
 	}
 

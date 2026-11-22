@@ -200,9 +200,8 @@ func runPrinter(inputName, outputName string, input InputConfig,
 			log.Printf("ERROR: [%s] %v", inputName, err)
 			return
 		}
-		// File anything a previous run left in the spool, then keep
-		// retrying on a timer.
-		healdan.drainSpool()
+		// Checks our Healdan settings, files anything a previous run
+		// left in the spool, then files each job as it ends.
 		healdan.start()
 		handler = healdan
 	} else {

@@ -109,3 +109,30 @@ func TestValidateUnknownMode(t *testing.T) {
 		t.Errorf("errors = %v", errs)
 	}
 }
+
+func TestValidateHealdanOutputSharedByInputs(t *testing.T) {
+	inputs := map[string]InputConfig{
+		"default": {HerculesAddress: "127.0.0.1:1403", Output: "default"},
+		"second":  {HerculesAddress: "127.0.0.1:1404", Output: "default"},
+	}
+	errs := validateConfig(inputs,
+		map[string]OutputConfig{"default": validHealdanOutput()})
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "one input") {
+		t.Errorf("errors = %v", errs)
+	}
+}
+
+func TestValidateHealdanSharedSpool(t *testing.T) {
+	inputs := map[string]InputConfig{
+		"default": {HerculesAddress: "127.0.0.1:1403", Output: "default"},
+		"second":  {HerculesAddress: "127.0.0.1:1404", Output: "other"},
+	}
+	other := validHealdanOutput()
+	other.Healdan.SpoolDir = "./spool/" // the same directory, spelt differently
+	errs := validateConfig(inputs, map[string]OutputConfig{
+		"default": validHealdanOutput(), "other": other})
+	if len(errs) != 1 ||
+		!strings.Contains(errs[0].Error(), "'healdan.spool_directory'") {
+		t.Errorf("errors = %v", errs)
+	}
+}
