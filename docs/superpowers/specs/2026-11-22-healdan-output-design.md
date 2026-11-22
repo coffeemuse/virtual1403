@@ -94,8 +94,10 @@ every other value is sent as written. `font_file` works as in `local` mode.
 - **Start:** sign in, fetch the folder's form to learn which properties are
   user fields, and look those usernames up. A config that can't work (bad
   password, folder not found or not fileable, unknown property or user) is
-  logged as `ERROR` and that input doesn't start, as a bad `local` output
-  directory is handled today.
+  logged as `ERROR` and uploads stop until the agent is restarted. The input
+  still runs and jobs still spool, so nothing printed meanwhile is lost. A
+  Healdan that is merely unreachable at start is a `WARN`, and the agent
+  tries again on the retry timer.
 - **Each job:** render the PDF to the spool directory under
   `v1403-<jobinfo>-<timestamp>.pdf`, then upload it under that name. On `201`
   delete the spooled file and log the doc #.
