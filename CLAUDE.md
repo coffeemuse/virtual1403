@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Virtual 1403 emulates an IBM 1403 line printer for Hercules (and similar mainframe emulators). It reads printer output from a Hercules `sockdev` printer and renders it as green-bar/blue-bar PDFs. One Go module (`github.com/racingmars/virtual1403`) holds two programs:
 
-- **`agent/`**: the user-facing binary (shipped as `virtual1403`). It connects to Hercules over TCP and, for each job, either writes a PDF locally (`mode: local`) or sends the job to the online service (`mode: online`).
+- **`agent/`**: the user-facing binary (shipped as `virtual1403`). It connects to Hercules over TCP and, for each job, writes a PDF locally (`mode: local`), sends the job to the online service (`mode: online`), or files the PDF in a Healdan DMS (`mode: healdan`).
 - **`webserver/`**: the online service (1403.bitnet.systems). It handles accounts, the `/print` API used by the agent, PDF email delivery, quotas, and an admin UI.
 
 ## Fork and branch model
@@ -23,7 +23,7 @@ This repo is a friendly fork of upstream [racingmars/virtual1403](https://github
 ```bash
 go build ./...                        # build everything
 go vet ./...
-go test ./...                         # tests exist only under webserver/ (webserver, mailer, model)
+go test ./...                         # tests exist under agent/ and webserver/ (webserver, mailer, model)
 go test ./webserver -run TestTrim     # run a single test
 go run ./agent -config agent/config.yaml
 go run ./agent -printfile foo.txt [-asa|-cdc] [-output <name>]   # print a local file instead of connecting to Hercules
@@ -59,6 +59,7 @@ Data flows: Hercules socket → `scanner` → `PrinterHandler` → `vprinter.Job
 **`agent/`**: `config.go` merges the top-level config, which becomes the input and output named `"default"`, with the optional `inputs:`/`outputs:` arrays into maps keyed by name. `main.go` starts one goroutine per input. Each goroutine reconnects to Hercules every 10s on disconnect and uses one handler:
 - `output.go` (`pdfOutputHandler`) writes `v1403-<jobinfo>-<timestamp>.pdf` locally.
 - `online.go` (`onlineOutputHandler`) streams the job to the webserver.
+- `healdan.go` (`healdanOutputHandler`) renders the PDF into a spool directory and files it in a folder of a [Healdan](https://github.com/Healdan-Project/healdan) DMS (`mode: healdan`), through the client in `healdanclient.go`. A PDF leaves the spool only once Healdan answers `201`; a timer retries the rest. A refused sign-in, or a bad folder or property, stops uploads until restart, and jobs keep spooling. The design is in `docs/superpowers/specs/2026-11-22-healdan-output-design.md`.
 
 Each handler creates a fresh `vprinter.Job` after every `EndOfJob`.
 

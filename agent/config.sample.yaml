@@ -2,10 +2,11 @@
 # information for the sockdev printer device here:
 hercules_address: "127.0.0.1:1403"
 
-# mode may be "online" or "local". online sends the print job to a web
-# service to render and email you a PDF. local produces the PDF locally
-# and places it in the configured output directory.
-mode: "online" # or "local"
+# mode may be "online", "local" or "healdan". online sends the print job to a
+# web service to render and email you a PDF. local produces the PDF locally
+# and places it in the configured output directory. healdan produces the PDF
+# locally and files it in a folder of a Healdan document management system.
+mode: "online" # or "local" or "healdan"
 
 
 ### ONLINE MODE #############################################################
@@ -31,10 +32,53 @@ output_directory: "pdfs"
 #
 #############################################################################
 
+### HEALDAN MODE ############################################################
+#
+# When mode is "healdan", each print job is filed as a PDF in one folder of a
+# Healdan document management system. Uncomment the "healdan" section and set:
+#
+#   url              The address of your Healdan server.
+#   username         A Healdan account for this agent. It must sign in with a
+#   password         password (not through a sign-in provider), and needs
+#                    only the Read and Write permissions on the folder. See
+#                    the README for how to set the account up.
+#   folder_id        The id of the folder to file into. It must be a folder
+#                    inside a matter, not the matter's own top folder.
+#   spool_directory  Where PDFs wait until Healdan has them. A PDF stays here
+#                    while Healdan can't be reached, or if Healdan refuses it.
+#   properties       Optional. Values for the properties of each document, by
+#                    the property names of the folder's filing form. Give a
+#                    Healdan username for properties that hold a person, such
+#                    as author and typist; left out, they are the agent's own
+#                    account. Other properties left out are inherited from
+#                    the folder.
+#
+# font_file (see LOCAL MODE) applies to healdan mode too.
+#
+# An output in healdan mode serves one input, and needs a spool_directory of
+# its own. For several printers, define one output per printer (see ADVANCED
+# CONFIGURATION below).
+#
+# This file then holds a password: make sure only you can read it.
+#
+#healdan:
+#  url: "https://healdan.example.com"
+#  username: "print-mvs1"
+#  password: "my-password"
+#  folder_id: 1234
+#  spool_directory: "healdan-spool"
+#  properties:
+#    docclass: "Printouts"
+#    docsubclass: "MVS1"
+#    author: "jsmith"
+#    typist: "jsmith"
+#
+#############################################################################
+
 ### PROFILE #################################################################
 #
 # Profile selects the font and paper background you wish for your jobs, and
-# applies to both online and local mode.
+# applies to every mode.
 #
 # Supported profiles are:
 #
@@ -108,3 +152,12 @@ profile: "default-green"
 #  output_directory: "pdfs_2"
 #  font_file: "my_font.ttf"
 #  profile: "default-green"
+#- name: "extra_out_healdan"
+#  mode: "healdan"
+#  profile: "default-green"
+#  healdan:
+#    url: "https://healdan.example.com"
+#    username: "print-mvs2"
+#    password: "my-password"
+#    folder_id: 5678
+#    spool_directory: "healdan-spool-2"
