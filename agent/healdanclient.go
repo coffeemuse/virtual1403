@@ -53,6 +53,15 @@ func (e *healdanError) Error() string {
 	}
 }
 
+// noSuchUserError means Healdan answered, and has no user of that name.
+type noSuchUserError struct {
+	username string
+}
+
+func (e *noSuchUserError) Error() string {
+	return fmt.Sprintf("Healdan has no active user named `%s`", e.username)
+}
+
 // healdanField is one property of a folder's filing form. We only need to
 // know its name and whether it holds a user (as Author and Typist do).
 type healdanField struct {
@@ -176,7 +185,7 @@ func (c *healdanClient) findUserID(username string) (int64, error) {
 			return hit.ID, nil
 		}
 	}
-	return 0, fmt.Errorf("Healdan has no active user named `%s`", username)
+	return 0, &noSuchUserError{username}
 }
 
 // fileDocument files a PDF as a new document in the folder and returns its
