@@ -110,6 +110,30 @@ func loadConfig(path string) (map[string]InputConfig, map[string]OutputConfig,
 	return inputs, outputs, nil
 }
 
+// outputDir is a directory that an output writes its PDFs into.
+type outputDir struct {
+	output string
+	path   string
+	info   os.FileInfo // nil when the directory doesn't exist yet
+}
+
+func newOutputDir(output, dir string) outputDir {
+	path := filepath.Clean(dir)
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	info, _ := os.Stat(path)
+	return outputDir{output, path, info}
+}
+
+// same says whether two outputs write into one directory, however each
+// spells it (a link, or other letter case on a file system that ignores
+// case, can only be told once the directory exists).
+func (d outputDir) same(other outputDir) bool {
+	return d.path == other.path ||
+		(d.info != nil && other.info != nil && os.SameFile(d.info, other.info))
+}
+
 func validateConfig(inputs map[string]InputConfig,
 	outputs map[string]OutputConfig) []error {
 
@@ -152,8 +176,13 @@ func validateConfig(inputs map[string]InputConfig,
 
 	// An output in healdan mode owns its spool directory: two printers
 	// working in one would file each other's PDFs, and file them twice.
-	spoolUsers := make(map[string][]string)
+	// A local output's directory counts too: the uploader would file and
+	// remove that output's PDFs.
+	var spools, locals []outputDir
 	for name, config := range outputs {
+		if config.Mode == "local" && config.OutputDir != "" {
+			locals = append(locals, newOutputDir(name, config.OutputDir))
+		}
 		if config.Mode != "healdan" {
 			continue
 		}
@@ -171,19 +200,31 @@ func validateConfig(inputs map[string]InputConfig,
 					"output and 'healdan.spool_directory'", name, users))
 		}
 		if config.Healdan.SpoolDir != "" {
-			dir := filepath.Clean(config.Healdan.SpoolDir)
-			if abs, err := filepath.Abs(dir); err == nil {
-				dir = abs
-			}
-			spoolUsers[dir] = append(spoolUsers[dir], name)
+			spools = append(spools, newOutputDir(name, config.Healdan.SpoolDir))
 		}
 	}
-	for _, names := range spoolUsers {
-		if len(names) > 1 {
-			sort.Strings(names)
-			errs = append(errs, fmt.Errorf(
-				"outputs %v have the same 'healdan.spool_directory'; "+
-					"each needs its own", names))
+	sort.Slice(spools, func(i, j int) bool {
+		return spools[i].output < spools[j].output
+	})
+	sort.Slice(locals, func(i, j int) bool {
+		return locals[i].output < locals[j].output
+	})
+	for i, spool := range spools {
+		for _, other := range spools[i+1:] {
+			if spool.same(other) {
+				errs = append(errs, fmt.Errorf(
+					"outputs %v have the same 'healdan.spool_directory'; "+
+						"each needs its own",
+					[]string{spool.output, other.output}))
+			}
+		}
+		for _, local := range locals {
+			if spool.same(local) {
+				errs = append(errs, fmt.Errorf(
+					"output [%s] 'healdan.spool_directory' is also output "+
+						"[%s]'s 'output_directory'; the spool needs a "+
+						"directory of its own", spool.output, local.output))
+			}
 		}
 	}
 
@@ -246,7 +287,7 @@ func validateConfig(inputs map[string]InputConfig,
 			}
 			if config.APIKey == "" {
 				errs = append(errs,
-					fmt.Errorf("output [%s] must set 'api_key'", name))
+					fmt.Errorf("output [%s] must set 'access_key'", name))
 			}
 		}
 	}

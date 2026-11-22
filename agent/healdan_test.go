@@ -369,7 +369,9 @@ func TestTickerRetries(t *testing.T) {
 	defer func() { retryInterval = saved }()
 
 	f := newFakeHealdan(t)
-	f.fileStatuses = []int{503}
+	// One 503 for printJob's pass and one for the pass start makes
+	// straight away, so only a pass from the timer can file the PDF.
+	f.fileStatuses = []int{503, 503}
 	h, spool := testHandler(t, f.srv.URL, nil)
 	printJob(h, "A")
 	h.start()

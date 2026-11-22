@@ -47,6 +47,13 @@ type healdanOutputHandler struct {
 	inputName string
 	now       func() time.Time
 
+	// hold is set for -printfile, where an agent may already be running
+	// on the same spool directory. Our PDFs are then kept under a name
+	// that agent's uploader doesn't list, and filed by fileHeld.
+	hold      bool
+	held      []string // jobs spooled while hold is set
+	spoolErrs int      // jobs we couldn't write to the spool
+
 	// mu guards everything below, and makes sure only one pass over the
 	// spool runs at a time. The goroutine that reads from Hercules never
 	// takes it: it only writes PDFs into the spool.
@@ -56,6 +63,7 @@ type healdanOutputHandler struct {
 	halted     bool            // no uploads until the agent is restarted
 	properties map[string]any  // as Healdan takes them
 	failed     map[string]bool // files Healdan refused; not retried
+	tries      map[string]int  // failed tries that may be retried, by file
 	kick       chan struct{}   // a job ended; make a pass over the spool
 	stopCh     chan struct{}
 	stopped    chan struct{}
@@ -67,7 +75,28 @@ const (
 	uploadDone   uploadResult = iota // filed; the spooled file is gone
 	uploadRetry                      // try again later
 	uploadFailed                     // refused; needs a person
+	uploadStuck                      // filed, but still in the spool
 )
+
+// maxTriesBeforeSkip is how many times one PDF may fail in a way worth
+// retrying before the PDFs behind it stop waiting for it.
+const maxTriesBeforeSkip = 3
+
+// refusedSignIns remembers, for this run of the agent, the accounts whose
+// sign-in Healdan refused, so that outputs sharing an account send a wrong
+// password once between them. It also makes sign-ins take turns.
+var refusedSignIns = struct {
+	sync.Mutex
+	reason map[string]string // by URL and username
+}{reason: make(map[string]string)}
+
+// spoolFileError is a failure to read a PDF in our own spool, which is no
+// fault of Healdan's.
+type spoolFileError struct {
+	err error
+}
+
+func (e *spoolFileError) Error() string { return e.err.Error() }
 
 func newHealdanOutputHandler(conf HealdanConfig, profile string,
 	fontOverride []byte, inputName string) (*healdanOutputHandler, error) {
@@ -80,6 +109,7 @@ func newHealdanOutputHandler(conf HealdanConfig, profile string,
 		now:       time.Now,
 		client:    newHealdanClient(conf.URL),
 		failed:    make(map[string]bool),
+		tries:     make(map[string]int),
 		kick:      make(chan struct{}, 1),
 	}
 
@@ -123,10 +153,16 @@ func (h *healdanOutputHandler) EndOfJob(jobinfo string) {
 	if err != nil {
 		log.Printf("ERROR: [%s] couldn't write PDF to the spool: %v",
 			h.inputName, err)
+		h.spoolErrs++
 		return
 	}
 	log.Printf("INFO:  [%s] wrote %d page PDF to the spool as %s",
 		h.inputName, pages, name)
+
+	if h.hold {
+		h.held = append(h.held, name) // fileHeld files it
+		return
+	}
 
 	// Filing it is the uploader's work (see start). We never wait for
 	// Healdan here: this is the goroutine that reads from Hercules.
@@ -150,12 +186,19 @@ func (h *healdanOutputHandler) spoolJob(jobinfo string) (string, int,
 
 	// Two jobs can end in the same second with the same job info.
 	name := base + ".pdf"
-	for n := 2; h.spoolNameTaken(name); n++ {
+	for n := 2; ; n++ {
+		taken, err := h.spoolNameTaken(name)
+		if err != nil {
+			return "", 0, err
+		}
+		if !taken {
+			break
+		}
 		name = fmt.Sprintf("%s-%d.pdf", base, n)
 	}
 
-	final := filepath.Join(h.conf.SpoolDir, name)
-	partial := final + ".part"
+	final := h.spoolPath(name)
+	partial := filepath.Join(h.conf.SpoolDir, name) + ".part"
 
 	f, err := os.OpenFile(partial, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
@@ -178,14 +221,55 @@ func (h *healdanOutputHandler) spoolJob(jobinfo string) (string, int,
 	return name, pages, nil
 }
 
-func (h *healdanOutputHandler) spoolNameTaken(name string) bool {
+// spoolPath is where a complete PDF of ours waits in the spool.
+func (h *healdanOutputHandler) spoolPath(name string) string {
 	path := filepath.Join(h.conf.SpoolDir, name)
-	for _, p := range []string{path, path + ".part"} {
-		if _, err := os.Lstat(p); err == nil || !os.IsNotExist(err) {
-			return true
+	if h.hold {
+		path += ".hold"
+	}
+	return path
+}
+
+func (h *healdanOutputHandler) spoolNameTaken(name string) (bool, error) {
+	path := filepath.Join(h.conf.SpoolDir, name)
+	for _, p := range []string{path, path + ".part", path + ".hold"} {
+		_, err := os.Lstat(p)
+		if err == nil {
+			return true, nil
+		}
+		if !os.IsNotExist(err) {
+			// We can't tell, and no other name would fare better.
+			return false, err
 		}
 	}
-	return false
+	return false, nil
+}
+
+// fileHeld tries once to file each PDF spooled while hold was set, and
+// returns how many jobs Healdan doesn't have. One it couldn't file is
+// handed over to the spool, for an agent's uploader to file later.
+func (h *healdanOutputHandler) fileHeld() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	left := h.spoolErrs
+	for _, name := range h.held {
+		result := h.upload(name)
+		if result == uploadDone {
+			continue
+		}
+		left++
+		if result == uploadStuck {
+			continue // Healdan has it; don't have it filed again
+		}
+		if err := os.Rename(h.spoolPath(name),
+			filepath.Join(h.conf.SpoolDir, name)); err != nil {
+			log.Printf("ERROR: [%s] couldn't hand %s over to the spool: %v",
+				h.inputName, name, err)
+		}
+	}
+	h.held = nil
+	return left
 }
 
 // start begins the uploader: a goroutine that checks our Healdan settings
@@ -213,6 +297,12 @@ func (h *healdanOutputHandler) start() {
 			case <-h.kick:
 				h.drainSpool()
 			case <-ticker.C:
+				// Also when nothing is waiting, so that settings we
+				// couldn't check at start are checked once Healdan is
+				// back.
+				h.mu.Lock()
+				h.ensureReady()
+				h.mu.Unlock()
 				h.drainSpool()
 			}
 		}
@@ -255,9 +345,23 @@ func (h *healdanOutputHandler) drainSpool() int {
 			left--
 		}
 		if result == uploadRetry {
-			// Healdan isn't answering as it should; the rest can wait
-			// for the next pass.
-			break
+			if !h.ready || h.halted {
+				break // nothing can be filed for now
+			}
+			h.tries[name]++
+			if h.tries[name] < maxTriesBeforeSkip {
+				// Healdan isn't answering as it should; the rest can
+				// wait for the next pass.
+				break
+			}
+			// This one keeps failing, so it may be the PDF and not
+			// Healdan. It is still tried on every pass, but the PDFs
+			// behind it no longer wait for it.
+			if h.tries[name] == maxTriesBeforeSkip {
+				log.Printf("ERROR: [%s] %s has failed %d times; newer PDFs "+
+					"will be filed ahead of it, and it may need a person "+
+					"to look at it", h.inputName, name, h.tries[name])
+			}
 		}
 	}
 	return left
@@ -324,14 +428,14 @@ func (h *healdanOutputHandler) upload(name string) uploadResult {
 	}
 
 	if err == nil {
-		path := filepath.Join(h.conf.SpoolDir, name)
+		path := h.spoolPath(name)
 		if rerr := os.Remove(path); rerr != nil {
 			// Don't file it a second time on the next pass.
 			h.failed[name] = true
 			log.Printf("ERROR: [%s] filed %s in Healdan as doc #%d, but "+
 				"couldn't remove it from the spool: %v", h.inputName, name,
 				docNumber, rerr)
-			return uploadFailed
+			return uploadStuck
 		}
 		if docNumber == 0 {
 			log.Printf("WARN:  [%s] filed %s in Healdan, which didn't say "+
@@ -343,7 +447,19 @@ func (h *healdanOutputHandler) upload(name string) uploadResult {
 		return uploadDone
 	}
 
-	if retryable(err) {
+	var local *spoolFileError
+	if errors.As(err, &local) {
+		// Our own file, not Healdan: the PDFs behind it needn't wait.
+		h.failed[name] = true
+		log.Printf("ERROR: [%s] couldn't read %s from `%s`: %v; it will be "+
+			"tried again when the agent is restarted", h.inputName, name,
+			h.conf.SpoolDir, err)
+		return uploadFailed
+	}
+
+	// A redirect comes from something in front of Healdan (a maintenance
+	// page, say), and is likely to pass.
+	if retryable(err) || isRedirect(err) {
 		log.Printf("WARN:  [%s] couldn't file %s in Healdan, will try "+
 			"again: %v", h.inputName, name, err)
 		return uploadRetry
@@ -357,9 +473,9 @@ func (h *healdanOutputHandler) upload(name string) uploadResult {
 }
 
 func (h *healdanOutputHandler) fileSpooled(name string) (int64, error) {
-	f, err := os.Open(filepath.Join(h.conf.SpoolDir, name))
+	f, err := os.Open(h.spoolPath(name))
 	if err != nil {
-		return 0, err
+		return 0, &spoolFileError{err}
 	}
 	defer f.Close()
 	return h.client.fileDocument(h.conf.FolderID, name, h.properties, f)
@@ -377,8 +493,24 @@ func (h *healdanOutputHandler) ensureReady() bool {
 		return true
 	}
 
-	err := h.client.signIn(h.conf.Username, h.conf.Password,
-		"virtual1403 "+h.inputName)
+	account := h.conf.URL + "\x00" + h.conf.Username
+	var err error
+	refusedSignIns.Lock()
+	reason, refused := refusedSignIns.reason[account]
+	if !refused {
+		err = h.client.signIn(h.conf.Username, h.conf.Password,
+			"virtual1403 "+h.inputName)
+		if err != nil && !retryable(err) {
+			refusedSignIns.reason[account] = err.Error()
+		}
+	}
+	refusedSignIns.Unlock()
+	if refused {
+		h.halt(fmt.Sprintf("not signing in to Healdan as `%s`: its sign-in "+
+			"was already refused for another output (%s)", h.conf.Username,
+			reason))
+		return false
+	}
 	if err != nil {
 		if retryable(err) {
 			log.Printf("WARN:  [%s] couldn't sign in to Healdan at %s, "+
@@ -395,8 +527,8 @@ func (h *healdanOutputHandler) ensureReady() bool {
 	properties, err := h.resolveProperties()
 	if err != nil {
 		if retryable(err) {
-			log.Printf("WARN:  [%s] couldn't read folder %d's form from "+
-				"Healdan, will try again: %v", h.inputName,
+			log.Printf("WARN:  [%s] couldn't get ready to file into "+
+				"Healdan folder %d, will try again: %v", h.inputName,
 				h.conf.FolderID, err)
 			return false
 		}
@@ -432,7 +564,7 @@ func (e *healdanConfigError) Error() string { return e.msg }
 func (h *healdanOutputHandler) resolveProperties() (map[string]any, error) {
 	fields, err := h.client.folderForm(h.conf.FolderID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading the folder's form: %w", err)
 	}
 	types := make(map[string]string, len(fields))
 	for _, f := range fields {
@@ -457,7 +589,8 @@ func (h *healdanOutputHandler) resolveProperties() (map[string]any, error) {
 				return nil, &healdanConfigError{fmt.Sprintf(
 					"property `%s`: %v", name, err)}
 			}
-			return nil, err
+			return nil, fmt.Errorf("looking up user `%s` for property "+
+				"`%s`: %w", value, name, err)
 		}
 		properties[name] = map[string]any{"id": id}
 	}
@@ -467,6 +600,11 @@ func (h *healdanOutputHandler) resolveProperties() (map[string]any, error) {
 func isStatus(err error, status int) bool {
 	var he *healdanError
 	return errors.As(err, &he) && he.Status == status
+}
+
+func isRedirect(err error) bool {
+	var he *healdanError
+	return errors.As(err, &he) && he.Status >= 300 && he.Status <= 399
 }
 
 // retryable says whether a failed request is worth sending again as it

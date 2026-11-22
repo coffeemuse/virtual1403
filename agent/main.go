@@ -107,6 +107,9 @@ func main() {
 			dir := conf.OutputDir
 			if conf.Mode == "healdan" {
 				dir = conf.Healdan.SpoolDir
+				// The spool is private; verifyOrCreateDir would create
+				// it for everyone to list. It reports any error here.
+				_ = os.MkdirAll(dir, 0700)
 			}
 			if err = verifyOrCreateDir(dir); err != nil {
 				log.Fatalf("FATAL: [%s] %v", name, err.Error())
@@ -276,6 +279,9 @@ func runFilePrinter(output OutputConfig, filename string) {
 			log.Printf("ERROR: %v", err)
 			return
 		}
+		// An agent may be running on this spool directory; keep our PDF
+		// out of its uploader's sight so it isn't filed twice.
+		healdan.hold = true
 		handler = healdan
 	} else {
 		log.Printf("INFO:  will use online print API at `%s`",
@@ -295,11 +301,12 @@ func runFilePrinter(output OutputConfig, filename string) {
 	}
 
 	if healdan != nil {
-		// The job was tried once as it ended. Anything still in the
-		// spool (this job, or ones from earlier runs) gets one more try.
-		if left := healdan.drainSpool(); left > 0 {
-			log.Printf("WARN:  %d PDF(s) left in `%s`; they will be "+
-				"filed the next time the agent runs", left,
+		// Nothing has been sent to Healdan yet: this is the one try for
+		// the job we just spooled. PDFs that other runs left in the spool
+		// are for an agent's uploader, not for us.
+		if left := healdan.fileHeld(); left > 0 {
+			log.Printf("WARN:  %d job(s) not filed in Healdan; a PDF left "+
+				"in `%s` will be filed by the agent when it runs", left,
 				output.Healdan.SpoolDir)
 			os.Exit(1)
 		}

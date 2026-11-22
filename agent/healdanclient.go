@@ -146,6 +146,10 @@ func (c *healdanClient) send(method, path, contentType string,
 			he.Code = problem.Code
 			he.Detail = problem.Detail
 		}
+		// We don't follow redirects; say where this one pointed.
+		if loc := resp.Header.Get("Location"); loc != "" && he.Detail == "" {
+			he.Detail = "redirected to " + loc
+		}
 		return nil, he
 	}
 	return resp, nil
@@ -182,29 +186,52 @@ func (c *healdanClient) signIn(username, password, deviceName string) error {
 // folderForm returns the properties a document filed into the folder can
 // have.
 func (c *healdanClient) folderForm(folderID int64) ([]healdanField, error) {
-	var page struct {
-		Items []healdanField `json:"items"`
+	return healdanList[healdanField](c,
+		"/folders/"+strconv.FormatInt(folderID, 10)+"/form")
+}
+
+// healdanList reads every item of a list that Healdan answers in pages
+// (`items`, `offset`, `limit`, `total`). Pages after the first are asked
+// for with an `offset` query parameter, named after the answer's own
+// member; this hasn't been checked against a live Healdan. An answer
+// without a `total` is taken to be the whole list.
+func healdanList[T any](c *healdanClient, path string) ([]T, error) {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
 	}
-	err := c.do(http.MethodGet,
-		"/folders/"+strconv.FormatInt(folderID, 10)+"/form", "", nil, &page)
-	return page.Items, err
+	var all []T
+	for {
+		var page struct {
+			Items []T `json:"items"`
+			Total int `json:"total"`
+		}
+		p := path
+		if len(all) > 0 {
+			p += sep + "offset=" + strconv.Itoa(len(all))
+		}
+		if err := c.do(http.MethodGet, p, "", nil, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Items...)
+		if len(page.Items) == 0 || len(all) >= page.Total {
+			return all, nil
+		}
+	}
 }
 
 // findUserID returns the id of the user with exactly this username,
 // ignoring case.
 func (c *healdanClient) findUserID(username string) (int64, error) {
-	var page struct {
-		Items []struct {
-			ID       int64  `json:"id"`
-			Username string `json:"username"`
-		} `json:"items"`
+	type user struct {
+		ID       int64  `json:"id"`
+		Username string `json:"username"`
 	}
-	err := c.do(http.MethodGet, "/users?q="+url.QueryEscape(username), "",
-		nil, &page)
+	hits, err := healdanList[user](c, "/users?q="+url.QueryEscape(username))
 	if err != nil {
 		return 0, err
 	}
-	for _, hit := range page.Items {
+	for _, hit := range hits {
 		if strings.EqualFold(hit.Username, username) {
 			return hit.ID, nil
 		}
