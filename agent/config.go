@@ -21,6 +21,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -34,7 +35,20 @@ type OutputConfig struct {
 	OutputDir      string `yaml:"output_directory"`
 	FontFile       string `yaml:"font_file"`
 	Profile        string `yaml:"profile"`
-	font           []byte
+	// Healdan is only used when Mode is "healdan".
+	Healdan HealdanConfig `yaml:"healdan"`
+	font    []byte
+}
+
+// HealdanConfig says where and how an output in "healdan" mode files its
+// PDFs in a Healdan document management system.
+type HealdanConfig struct {
+	URL        string            `yaml:"url"`
+	Username   string            `yaml:"username"`
+	Password   string            `yaml:"password"`
+	FolderID   int64             `yaml:"folder_id"`
+	SpoolDir   string            `yaml:"spool_directory"`
+	Properties map[string]string `yaml:"properties"`
 }
 
 type InputConfig struct {
@@ -135,11 +149,47 @@ func validateConfig(inputs map[string]InputConfig,
 	}
 
 	for name, config := range outputs {
-		if !(config.Mode == "local" || config.Mode == "online") {
+		if !(config.Mode == "local" || config.Mode == "online" ||
+			config.Mode == "healdan") {
 			errs = append(errs,
 				fmt.Errorf(
-					"output [%s] 'mode' must be either 'local' or 'online'",
-					name))
+					"output [%s] 'mode' must be 'local', 'online' or "+
+						"'healdan'", name))
+		}
+
+		if config.Mode == "healdan" {
+			h := config.Healdan
+			if h.URL == "" {
+				errs = append(errs,
+					fmt.Errorf("output [%s] must set 'healdan.url'", name))
+			} else if u, err := url.Parse(h.URL); err != nil ||
+				!(u.Scheme == "http" || u.Scheme == "https") ||
+				u.Host == "" {
+				errs = append(errs,
+					fmt.Errorf("output [%s] 'healdan.url' must be an "+
+						"http or https address", name))
+			}
+			if h.Username == "" {
+				errs = append(errs,
+					fmt.Errorf("output [%s] must set 'healdan.username'",
+						name))
+			}
+			if h.Password == "" {
+				errs = append(errs,
+					fmt.Errorf("output [%s] must set 'healdan.password'",
+						name))
+			}
+			if h.FolderID <= 0 {
+				errs = append(errs,
+					fmt.Errorf("output [%s] must set 'healdan.folder_id'",
+						name))
+			}
+			if h.SpoolDir == "" {
+				errs = append(errs,
+					fmt.Errorf(
+						"output [%s] must set 'healdan.spool_directory'",
+						name))
+			}
 		}
 
 		if config.Mode == "local" {
